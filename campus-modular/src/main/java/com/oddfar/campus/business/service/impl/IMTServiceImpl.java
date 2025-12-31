@@ -107,9 +107,11 @@ public class IMTServiceImpl implements IMTService {
     public void init() {
         imtExecutor.execute(() -> {
             try {
+                logger.info("开始初始化i茅台数据");
                 refreshAll();
+                logger.info("i茅台数据初始化完成");
             } catch (Exception e) {
-                logger.error("初始化数据失败", e);
+                logger.error("初始化i茅台数据失败", e);
             }
         });
     }
@@ -119,9 +121,11 @@ public class IMTServiceImpl implements IMTService {
     public String getMTVersion() {
         String mtVersion = Convert.toStr(redisCache.getCacheObject(REDIS_KEY_MT_VERSION));
         if (StringUtils.isNotEmpty(mtVersion)) {
+            logger.debug("从缓存获取i茅台版本号: {}", mtVersion);
             return mtVersion;
         }
         try {
+            logger.info("从Apple App Store获取i茅台版本号");
             String htmlContent = HttpUtil.get(APPLE_APP_URL);
             Pattern pattern = Pattern.compile(VERSION_PATTERN, Pattern.DOTALL);
             Matcher matcher = pattern.matcher(htmlContent);
@@ -130,6 +134,9 @@ public class IMTServiceImpl implements IMTService {
             }
             if (StringUtils.isNotEmpty(mtVersion)) {
                 redisCache.setCacheObject(REDIS_KEY_MT_VERSION, mtVersion);
+                logger.info("成功获取i茅台版本号: {}", mtVersion);
+            } else {
+                logger.warn("未能从HTML中提取i茅台版本号");
             }
         } catch (Exception e) {
             logger.error("获取i茅台版本号失败", e);
@@ -158,13 +165,14 @@ public class IMTServiceImpl implements IMTService {
 
         HttpResponse execute = request.body(JSONObject.toJSONString(data)).execute();
         JSONObject jsonObject = JSONObject.parseObject(execute.body());
-        logger.info("「发送验证码返回」：{}", jsonObject.toJSONString());
+        logger.info("「发送验证码返回」mobile: {}, response: {}", mobile, jsonObject.toJSONString());
         
         if (String.valueOf(SUCCESS_CODE_2000).equals(jsonObject.getString("code"))) {
             return Boolean.TRUE;
         } else {
-            logger.error("「发送验证码-失败」：{}", jsonObject.toJSONString());
-            throw new ServiceException("发送验证码错误");
+            String errorMsg = jsonObject.getString("message");
+            logger.error("「发送验证码失败」mobile: {}, response: {}", mobile, jsonObject.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "发送验证码失败");
         }
     }
 
@@ -195,10 +203,12 @@ public class IMTServiceImpl implements IMTService {
 
         if (String.valueOf(SUCCESS_CODE_2000).equals(body.getString("code"))) {
             iUserService.insertIUser(Long.parseLong(mobile), deviceId, body);
+            logger.info("「登录成功」mobile: {}", mobile);
             return true;
         } else {
-            logger.error("「登录请求-失败」{}", body.toJSONString());
-            throw new ServiceException("登录失败，本地错误日志已记录");
+            String errorMsg = body.getString("message");
+            logger.error("「登录失败」mobile: {}, response: {}", mobile, body.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "登录失败");
         }
     }
 
@@ -206,11 +216,18 @@ public class IMTServiceImpl implements IMTService {
     @Override
     public void reservation(IUser iUser) {
         if (StringUtils.isEmpty(iUser.getItemCode())) {
+            logger.warn("用户未配置预约商品，mobile: {}", iUser.getMobile());
             return;
         }
         String[] items = iUser.getItemCode().split("@");
+        if (items.length == 0) {
+            logger.warn("用户预约商品配置为空，mobile: {}", iUser.getMobile());
+            return;
+        }
 
         StringBuilder logContent = new StringBuilder();
+        logContent.append(String.format("「开始预约」mobile: %s, 商品数量: %d\n", iUser.getMobile(), items.length));
+        
         for (String itemId : items) {
             try {
                 String shopId = iShopService.getShopId(iUser.getShopType(), itemId,
@@ -218,8 +235,9 @@ public class IMTServiceImpl implements IMTService {
                 JSONObject json = reservation(iUser, itemId, shopId);
                 logContent.append(String.format("[预约项目]：%s\n[shopId]：%s\n[结果返回]：%s\n\n", 
                     itemId, shopId, json.toString()));
+                logger.info("「预约成功」mobile: {}, itemId: {}, shopId: {}", iUser.getMobile(), itemId, shopId);
             } catch (Exception e) {
-                logger.error("预约项目失败，itemId: {}", itemId, e);
+                logger.error("「预约失败」mobile: {}, itemId: {}", iUser.getMobile(), itemId, e);
                 logContent.append(String.format("执行报错--[预约项目]：%s\n[结果返回]：%s\n\n", 
                     itemId, e.getMessage()));
             }
@@ -239,14 +257,16 @@ public class IMTServiceImpl implements IMTService {
             StringBuilder logContent = new StringBuilder();
             try {
                 TimeUnit.SECONDS.sleep(DELAY_SECONDS_10);
+                logger.debug("开始获取申购耐力值，mobile: {}", iUser.getMobile());
                 String energyAward = getEnergyAward(iUser);
                 logContent.append("[申购耐力值]:").append(energyAward);
+                logger.info("「获取申购耐力值成功」mobile: {}, result: {}", iUser.getMobile(), energyAward);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                logger.error("延迟获取申购耐力值被中断", e);
+                logger.error("「获取申购耐力值被中断」mobile: {}", iUser.getMobile(), e);
                 logContent.append("执行报错--[申购耐力值]:").append(e.getMessage());
             } catch (Exception e) {
-                logger.error("获取申购耐力值失败", e);
+                logger.error("「获取申购耐力值失败」mobile: {}", iUser.getMobile(), e);
                 logContent.append("执行报错--[申购耐力值]:").append(e.getMessage());
             }
             IMTLogFactory.reservation(iUser, logContent.toString());
@@ -266,8 +286,11 @@ public class IMTServiceImpl implements IMTService {
         JSONObject body = JSONObject.parseObject(execute.body());
 
         if (body.getInteger("code") != SUCCESS_CODE_2000) {
-            throw new ServiceException("领取小茅运失败");
+            String errorMsg = body.getString("message");
+            logger.error("「领取小茅运失败」mobile: {}, response: {}", iUser.getMobile(), body.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "领取小茅运失败");
         }
+        logger.info("「领取小茅运成功」mobile: {}", iUser.getMobile());
     }
 
     /**
@@ -287,7 +310,8 @@ public class IMTServiceImpl implements IMTService {
         
         if (jsonObject.getInteger("code") != SUCCESS_CODE_200) {
             String message = jsonObject.getString("message");
-            throw new ServiceException(message);
+            logger.error("「获取申购耐力值失败」mobile: {}, response: {}", iUser.getMobile(), body);
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取申购耐力值失败");
         }
 
         return body;
@@ -297,10 +321,12 @@ public class IMTServiceImpl implements IMTService {
     public void getTravelReward(IUser iUser) {
         StringBuilder logContent = new StringBuilder();
         try {
+            logger.info("「开始获得旅行奖励」mobile: {}", iUser.getMobile());
             String s = travelReward(iUser);
             logContent.append("[获得旅行奖励]:").append(s);
+            logger.info("「获得旅行奖励成功」mobile: {}, result: {}", iUser.getMobile(), s);
         } catch (Exception e) {
-            logger.error("获得旅行奖励失败", e);
+            logger.error("「获得旅行奖励失败」mobile: {}", iUser.getMobile(), e);
             logContent.append("执行报错--[获得旅行奖励]:").append(e.getMessage());
         }
         IMTLogFactory.reservation(iUser, logContent.toString());
@@ -354,10 +380,12 @@ public class IMTServiceImpl implements IMTService {
         JSONObject jsonObject = JSONObject.parseObject(body);
         
         if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = "开始旅行失败：" + jsonObject.getString("message");
-            throw new ServiceException(message);
+            String message = jsonObject.getString("message");
+            logger.error("「开始旅行失败」mobile: {}, response: {}", iUser.getMobile(), body);
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? "开始旅行失败：" + message : "开始旅行失败");
         }
         
+        logger.info("「开始旅行成功」mobile: {}", iUser.getMobile());
         return jsonObject.toString();
     }
 
@@ -378,10 +406,13 @@ public class IMTServiceImpl implements IMTService {
         
         if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
             String message = jsonObject.getString("message");
-            throw new ServiceException(message);
+            logger.error("「查询小茅运失败」mobile: {}, response: {}", iUser.getMobile(), body);
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "查询小茅运失败");
         }
         
-        return jsonObject.getJSONObject("data").getDouble("travelRewardXmy");
+        Double reward = jsonObject.getJSONObject("data").getDouble("travelRewardXmy");
+        logger.debug("「查询小茅运成功」mobile: {}, reward: {}", iUser.getMobile(), reward);
+        return reward;
     }
 
     /**
@@ -400,7 +431,8 @@ public class IMTServiceImpl implements IMTService {
         
         if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
             String message = jsonObject.getString("message");
-            throw new ServiceException(message);
+            logger.error("「获取用户页面数据失败」mobile: {}, response: {}", iUser.getMobile(), body);
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取用户页面数据失败");
         }
         
         JSONObject data = jsonObject.getJSONObject("data");
@@ -413,12 +445,14 @@ public class IMTServiceImpl implements IMTService {
         Integer energyValue = energyReward.getInteger("value");
 
         if (energyValue != null && energyValue > 0) {
+            logger.debug("检测到可领取耐力值奖励，mobile: {}, energyValue: {}", iUser.getMobile(), energyValue);
             getEnergyAward(iUser);
             energy += energyValue;
         }
 
         int exchangeRateInfo = getExchangeRateInfo(iUser);
         if (exchangeRateInfo <= 0) {
+            logger.warn("「当月无可领取奖励」mobile: {}", iUser.getMobile());
             throw new ServiceException("当月无可领取奖励");
         }
 
@@ -426,6 +460,7 @@ public class IMTServiceImpl implements IMTService {
         if (status == TRAVEL_STATUS_NOT_START) {
             if (energy < MIN_ENERGY_REQUIRED) {
                 String message = String.format("耐力不足100, 当前耐力值:%s", energy);
+                logger.warn("「耐力不足」mobile: {}, energy: {}", iUser.getMobile(), energy);
                 throw new ServiceException(message);
             }
         }
@@ -435,6 +470,7 @@ public class IMTServiceImpl implements IMTService {
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
             String formattedDate = sdf.format(date);
             String message = String.format("旅行暂未结束,本次旅行结束时间:%s ", formattedDate);
+            logger.warn("「旅行进行中」mobile: {}, endTime: {}", iUser.getMobile(), formattedDate);
             throw new ServiceException(message);
         }
         
@@ -442,6 +478,8 @@ public class IMTServiceImpl implements IMTService {
         map.put("remainChance", remainChance);
         map.put("status", status);
         map.put("currentPeriodCanConvertXmyNum", exchangeRateInfo);
+        logger.debug("「获取用户页面数据成功」mobile: {}, remainChance: {}, status: {}", 
+            iUser.getMobile(), remainChance, status);
         return map;
     }
 
@@ -461,10 +499,13 @@ public class IMTServiceImpl implements IMTService {
         
         if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
             String message = jsonObject.getString("message");
-            throw new ServiceException(message);
+            logger.error("「获取剩余奖励耐力值失败」mobile: {}, response: {}", iUser.getMobile(), body);
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取剩余奖励耐力值失败");
         }
         
-        return jsonObject.getJSONObject("data").getIntValue("currentPeriodCanConvertXmyNum");
+        int exchangeRateInfo = jsonObject.getJSONObject("data").getIntValue("currentPeriodCanConvertXmyNum");
+        logger.debug("「获取剩余奖励耐力值成功」mobile: {}, exchangeRateInfo: {}", iUser.getMobile(), exchangeRateInfo);
+        return exchangeRateInfo;
     }
 
     @Async
@@ -472,20 +513,28 @@ public class IMTServiceImpl implements IMTService {
     public void reservationBatch() {
         int minute = DateUtil.minute(new Date());
         List<IUser> iUsers = iUserService.selectReservationUserByMinute(minute);
+        
+        if (iUsers == null || iUsers.isEmpty()) {
+            logger.debug("「批量预约」当前分钟({})无待预约用户", minute);
+            return;
+        }
+        
+        logger.info("「批量预约开始」当前分钟: {}, 用户数量: {}", minute, iUsers.size());
 
         for (IUser iUser : iUsers) {
-            logger.info("「开始预约用户」{}", iUser.getMobile());
+            logger.info("「开始预约用户」mobile: {}", iUser.getMobile());
             try {
                 reservation(iUser);
                 TimeUnit.SECONDS.sleep(DELAY_SECONDS_3);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                logger.error("批量预约被中断", e);
+                logger.error("「批量预约被中断」当前分钟: {}", minute, e);
                 break;
             } catch (Exception e) {
-                logger.error("预约用户失败，mobile: {}", iUser.getMobile(), e);
+                logger.error("「预约用户失败」mobile: {}", iUser.getMobile(), e);
             }
         }
+        logger.info("「批量预约结束」当前分钟: {}, 处理用户数: {}", minute, iUsers.size());
     }
 
     @Async
@@ -494,22 +543,30 @@ public class IMTServiceImpl implements IMTService {
         try {
             int minute = DateUtil.minute(new Date());
             List<IUser> iUsers = iUserService.selectReservationUserByMinute(minute);
+            
+            if (iUsers == null || iUsers.isEmpty()) {
+                logger.debug("「批量获得旅行奖励」当前分钟({})无待处理用户", minute);
+                return;
+            }
+            
+            logger.info("「批量获得旅行奖励开始」当前分钟: {}, 用户数量: {}", minute, iUsers.size());
 
             for (IUser iUser : iUsers) {
-                logger.info("「开始获得旅行奖励」{}", iUser.getMobile());
+                logger.info("「开始获得旅行奖励」mobile: {}", iUser.getMobile());
                 try {
                     getTravelReward(iUser);
                     TimeUnit.SECONDS.sleep(DELAY_SECONDS_3);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    logger.error("批量获得旅行奖励被中断", e);
+                    logger.error("「批量获得旅行奖励被中断」当前分钟: {}", minute, e);
                     break;
                 } catch (Exception e) {
-                    logger.error("获得旅行奖励失败，mobile: {}", iUser.getMobile(), e);
+                    logger.error("「获得旅行奖励失败」mobile: {}", iUser.getMobile(), e);
                 }
             }
+            logger.info("「批量获得旅行奖励结束」当前分钟: {}, 处理用户数: {}", minute, iUsers.size());
         } catch (Exception e) {
-            logger.error("批量获得旅行奖励失败", e);
+            logger.error("「批量获得旅行奖励异常」", e);
         }
     }
 
@@ -522,8 +579,19 @@ public class IMTServiceImpl implements IMTService {
 
     @Override
     public void appointmentResults() {
-        logger.info("申购结果查询开始=========================");
+        logger.info("「申购结果查询开始」");
         List<IUser> iUsers = iUserService.selectReservationUser();
+        
+        if (iUsers == null || iUsers.isEmpty()) {
+            logger.info("「申购结果查询」无待查询用户");
+            return;
+        }
+        
+        logger.info("「申购结果查询」待查询用户数: {}", iUsers.size());
+        
+        int successCount = 0;
+        int failCount = 0;
+        
         for (IUser iUser : iUsers) {
             try {
                 String url = "https://app.moutai519.com.cn/xhr/front/mall/reservation/list/pageOne/query";
@@ -533,16 +601,18 @@ public class IMTServiceImpl implements IMTService {
                 
                 String body = request.execute().body();
                 JSONObject jsonObject = JSONObject.parseObject(body);
-                logger.info("查询申购结果回调: user->{},response->{}", iUser.getMobile(), body);
+                logger.debug("「查询申购结果」mobile: {}, response: {}", iUser.getMobile(), body);
                 
                 if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
                     String message = jsonObject.getString("message");
-                    throw new ServiceException(message);
+                    logger.warn("「查询申购结果失败」mobile: {}, message: {}", iUser.getMobile(), message);
+                    failCount++;
+                    continue;
                 }
                 
                 JSONArray itemVOs = jsonObject.getJSONObject("data").getJSONArray("reservationItemVOS");
                 if (Objects.isNull(itemVOs) || itemVOs.isEmpty()) {
-                    logger.info("申购记录为空: user->{}", iUser.getMobile());
+                    logger.debug("「申购记录为空」mobile: {}", iUser.getMobile());
                     continue;
                 }
                 
@@ -554,13 +624,19 @@ public class IMTServiceImpl implements IMTService {
                             DateUtil.formatDate(item.getDate("reservationTime")), 
                             item.getString("itemName"));
                         IMTLogFactory.reservation(iUser, logContent);
+                        logger.info("「申购成功」mobile: {}, itemName: {}, reservationTime: {}", 
+                            iUser.getMobile(), item.getString("itemName"), 
+                            DateUtil.formatDate(item.getDate("reservationTime")));
+                        successCount++;
                     }
                 }
             } catch (Exception e) {
-                logger.error("查询申购结果失败: user->{}, 失败原因->{}", iUser.getMobile(), e.getMessage(), e);
+                logger.error("「查询申购结果异常」mobile: {}", iUser.getMobile(), e);
+                failCount++;
             }
         }
-        logger.info("申购结果查询结束=========================");
+        logger.info("「申购结果查询结束」总用户数: {}, 成功数: {}, 失败数: {}", 
+            iUsers.size(), successCount, failCount);
     }
 
     /**
@@ -600,9 +676,13 @@ public class IMTServiceImpl implements IMTService {
         
         if (body.getInteger("code") != SUCCESS_CODE_2000) {
             String message = body.getString("message");
-            throw new ServiceException(message);
+            logger.error("「预约商品失败」mobile: {}, itemId: {}, shopId: {}, response: {}", 
+                iUser.getMobile(), itemId, shopId, body.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "预约商品失败");
         }
         
+        logger.info("「预约商品成功」mobile: {}, itemId: {}, shopId: {}", 
+            iUser.getMobile(), itemId, shopId);
         return body;
     }
 

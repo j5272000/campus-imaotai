@@ -47,81 +47,121 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
 
     @Override
     public List<IShop> selectShopList() {
-
         List<IShop> shopList = redisCache.getCacheList("mt_shop_list");
 
-        if (shopList != null && shopList.size() > 0) {
+        if (shopList != null && !shopList.isEmpty()) {
+            logger.debug("从缓存获取门店列表，数量: {}", shopList.size());
             return shopList;
-        } else {
-            refreshShop();
         }
 
+        logger.info("缓存中无门店列表，开始刷新");
+        refreshShop();
         shopList = iShopMapper.selectList();
-
-
+        logger.info("获取门店列表完成，数量: {}", shopList != null ? shopList.size() : 0);
         return shopList;
     }
 
-    //    @Async
     @Override
     public void refreshShop() {
+        try {
+            logger.info("开始刷新门店列表");
+            HttpRequest request = HttpUtil.createRequest(Method.GET,
+                    "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/resource/get");
 
-        HttpRequest request = HttpUtil.createRequest(Method.GET,
-                "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/resource/get");
+            JSONObject body = JSONObject.parseObject(request.execute().body());
+            //获取shop的url
+            JSONObject data = body.getJSONObject("data");
+            if (data == null || !data.containsKey("mtshops_pc")) {
+                throw new ServiceException("获取门店资源URL失败，响应数据异常");
+            }
+            String shopUrl = data.getJSONObject("mtshops_pc").getString("url");
+            if (StringUtils.isEmpty(shopUrl)) {
+                throw new ServiceException("门店资源URL为空");
+            }
+            
+            //清空数据库
+            iShopMapper.truncateShop();
+            redisCache.deleteObject("mt_shop_list");
+            logger.debug("已清空门店数据库和缓存");
 
-        JSONObject body = JSONObject.parseObject(request.execute().body());
-        //获取shop的url
-        String shopUrl = body.getJSONObject("data").getJSONObject("mtshops_pc").getString("url");
-        //清空数据库
-        iShopMapper.truncateShop();
-        redisCache.deleteObject("mt_shop_list");
+            String shopData = HttpUtil.get(shopUrl);
+            if (StringUtils.isEmpty(shopData)) {
+                throw new ServiceException("获取门店数据失败，返回为空");
+            }
 
-        String s = HttpUtil.get(shopUrl);
-
-        JSONObject jsonObject = JSONObject.parseObject(s);
-        Set<String> shopIdSet = jsonObject.keySet();
-        List<IShop> list = new ArrayList<>();
-        for (String iShopId : shopIdSet) {
-            JSONObject shop = jsonObject.getJSONObject(iShopId);
-            IShop iShop = new IShop(iShopId, shop);
-//            iShopMapper.insert(iShop);
-            list.add(iShop);
+            JSONObject jsonObject = JSONObject.parseObject(shopData);
+            Set<String> shopIdSet = jsonObject.keySet();
+            List<IShop> list = new ArrayList<>();
+            for (String iShopId : shopIdSet) {
+                JSONObject shop = jsonObject.getJSONObject(iShopId);
+                IShop iShop = new IShop(iShopId, shop);
+                list.add(iShop);
+            }
+            
+            if (!list.isEmpty()) {
+                this.saveBatch(list);
+                redisCache.setCacheList("mt_shop_list", list);
+                logger.info("门店列表刷新完成，共{}个门店", list.size());
+            } else {
+                logger.warn("门店列表为空，未刷新数据");
+            }
+        } catch (Exception e) {
+            logger.error("刷新门店列表失败", e);
+            throw new ServiceException("刷新门店列表失败: " + e.getMessage());
         }
-        this.saveBatch(list);
-        redisCache.setCacheList("mt_shop_list", list);
     }
 
     @Override
     public String getCurrentSessionId() {
         String mtSessionId = Convert.toStr(redisCache.getCacheObject("mt_session_id"));
 
-        long dayTime = LocalDate.now().atStartOfDay().toInstant(ZoneOffset.of("+8")).toEpochMilli();
         if (StringUtils.isNotEmpty(mtSessionId)) {
+            logger.debug("从缓存获取SessionId: {}", mtSessionId);
             return mtSessionId;
         }
 
-        String res = HttpUtil.get("https://static.moutai519.com.cn/mt-backend/xhr/front/mall/index/session/get/" + dayTime);
-        //替换 current_session_id 673 ['data']['sessionId']
-        JSONObject jsonObject = JSONObject.parseObject(res);
-
-        if (jsonObject.getString("code").equals("2000")) {
-            JSONObject data = jsonObject.getJSONObject("data");
-            mtSessionId = data.getString("sessionId");
-            redisCache.setCacheObject("mt_session_id", mtSessionId);
-
-            iItemMapper.truncateItem();
-            //item插入数据库
-            JSONArray itemList = data.getJSONArray("itemList");
-            for (Object obj : itemList) {
-                JSONObject item = (JSONObject) obj;
-                IItem iItem = new IItem(item);
-                iItemMapper.insert(iItem);
+        try {
+            logger.info("缓存中无SessionId，开始获取");
+            long dayTime = LocalDate.now().atStartOfDay().toInstant(ZoneOffset.of("+8")).toEpochMilli();
+            String url = "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/index/session/get/" + dayTime;
+            String res = HttpUtil.get(url);
+            
+            if (StringUtils.isEmpty(res)) {
+                throw new ServiceException("获取SessionId失败，响应为空");
             }
+            
+            JSONObject jsonObject = JSONObject.parseObject(res);
 
+            if ("2000".equals(jsonObject.getString("code"))) {
+                JSONObject data = jsonObject.getJSONObject("data");
+                mtSessionId = data.getString("sessionId");
+                if (StringUtils.isEmpty(mtSessionId)) {
+                    throw new ServiceException("SessionId为空");
+                }
+                redisCache.setCacheObject("mt_session_id", mtSessionId);
+                logger.info("成功获取SessionId: {}", mtSessionId);
+
+                iItemMapper.truncateItem();
+                //item插入数据库
+                JSONArray itemList = data.getJSONArray("itemList");
+                if (itemList != null && !itemList.isEmpty()) {
+                    for (Object obj : itemList) {
+                        JSONObject item = (JSONObject) obj;
+                        IItem iItem = new IItem(item);
+                        iItemMapper.insert(iItem);
+                    }
+                    logger.info("商品列表更新完成，共{}个商品", itemList.size());
+                }
+            } else {
+                String message = jsonObject.getString("message");
+                throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取SessionId失败");
+            }
+        } catch (Exception e) {
+            logger.error("获取SessionId失败", e);
+            throw new ServiceException("获取SessionId失败: " + e.getMessage());
         }
 
         return mtSessionId;
-
     }
 
     @Override
@@ -132,13 +172,16 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
 
     @Override
     public IShop selectByIShopId(String iShopId) {
-        List<IShop> iShopList = iShopMapper.selectList("i_shop_id", iShopId);
-        if (iShopList != null && iShopList.size() > 0) {
-            return iShopList.get(0);
-        } else {
+        if (StringUtils.isEmpty(iShopId)) {
+            logger.warn("查询门店时shopId为空");
             return null;
         }
-//        return iShopMapper.selectOne(IShop::getIShopId, iShopId);
+        List<IShop> iShopList = iShopMapper.selectList("i_shop_id", iShopId);
+        if (iShopList != null && !iShopList.isEmpty()) {
+            return iShopList.get(0);
+        }
+        logger.debug("未找到门店，shopId: {}", iShopId);
+        return null;
     }
 
     @Override
@@ -156,50 +199,73 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
     }
 
     public List<IMTItemInfo> reGetShopsByProvince(String province, String itemId) {
+        if (StringUtils.isEmpty(province) || StringUtils.isEmpty(itemId)) {
+            logger.warn("查询门店时参数为空，province: {}, itemId: {}", province, itemId);
+            return new ArrayList<>();
+        }
 
-        long dayTime = LocalDate.now().atStartOfDay().toInstant(ZoneOffset.of("+8")).toEpochMilli();
-
-        String url = "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/shop/list/slim/v3/" + getCurrentSessionId() + "/" + province + "/" + itemId + "/" + dayTime;
-
-        String urlRes = HttpUtil.get(url);
-        JSONObject res = null;
         try {
-            res = JSONObject.parseObject(urlRes);
-        } catch (JSONException jsonException) {
-            String message = StringUtils.format("查询所在省市的投放产品和数量error: %s", url);
-            logger.error(message);
-            throw new ServiceException(message);
-        }
+            long dayTime = LocalDate.now().atStartOfDay().toInstant(ZoneOffset.of("+8")).toEpochMilli();
+            String sessionId = getCurrentSessionId();
+            String url = "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/shop/list/slim/v3/" 
+                + sessionId + "/" + province + "/" + itemId + "/" + dayTime;
 
-//        JSONObject res = JSONObject.parseObject(HttpUtil.get(url));
-        if (!res.containsKey("code") || !res.getString("code").equals("2000")) {
-            String message = StringUtils.format("查询所在省市的投放产品和数量error: %s", url);
-            logger.error(message);
-            throw new ServiceException(message);
-        }
-        //组合信息
-        List<IMTItemInfo> imtItemInfoList = new ArrayList<>();
+            logger.debug("查询省市门店，province: {}, itemId: {}", province, itemId);
+            String urlRes = HttpUtil.get(url);
+            
+            if (StringUtils.isEmpty(urlRes)) {
+                throw new ServiceException("查询门店数据失败，响应为空");
+            }
+            
+            JSONObject res = JSONObject.parseObject(urlRes);
 
-        JSONObject data = res.getJSONObject("data");
-        JSONArray shopList = data.getJSONArray("shops");
-
-        for (Object obj : shopList) {
-            JSONObject shops = (JSONObject) obj;
-            JSONArray items = shops.getJSONArray("items");
-            for (Object item : items) {
-                JSONObject itemObj = (JSONObject) item;
-                if (itemObj.getString("itemId").equals(itemId)) {
-                    IMTItemInfo iItem = new IMTItemInfo(shops.getString("shopId"),
-                            itemObj.getIntValue("count"), itemObj.getString("itemId"), itemObj.getIntValue("inventory"));
-                    //添加
-                    imtItemInfoList.add(iItem);
-                }
-
+            if (!res.containsKey("code") || !"2000".equals(res.getString("code"))) {
+                String message = res.getString("message");
+                logger.error("查询门店失败，province: {}, itemId: {}, response: {}", province, itemId, urlRes);
+                throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "查询门店失败");
+            }
+            
+            //组合信息
+            List<IMTItemInfo> imtItemInfoList = new ArrayList<>();
+            JSONObject data = res.getJSONObject("data");
+            if (data == null || !data.containsKey("shops")) {
+                logger.warn("门店数据为空，province: {}, itemId: {}", province, itemId);
+                return imtItemInfoList;
+            }
+            
+            JSONArray shopList = data.getJSONArray("shops");
+            if (shopList == null || shopList.isEmpty()) {
+                logger.debug("门店列表为空，province: {}, itemId: {}", province, itemId);
+                return imtItemInfoList;
             }
 
-
+            for (Object obj : shopList) {
+                JSONObject shops = (JSONObject) obj;
+                JSONArray items = shops.getJSONArray("items");
+                if (items == null || items.isEmpty()) {
+                    continue;
+                }
+                
+                for (Object item : items) {
+                    JSONObject itemObj = (JSONObject) item;
+                    if (itemId.equals(itemObj.getString("itemId"))) {
+                        IMTItemInfo iItem = new IMTItemInfo(shops.getString("shopId"),
+                                itemObj.getIntValue("count"), itemObj.getString("itemId"), 
+                                itemObj.getIntValue("inventory"));
+                        imtItemInfoList.add(iItem);
+                    }
+                }
+            }
+            
+            logger.info("查询门店完成，province: {}, itemId: {}, 门店数: {}", province, itemId, imtItemInfoList.size());
+            return imtItemInfoList;
+        } catch (JSONException e) {
+            logger.error("解析门店数据JSON失败，province: {}, itemId: {}", province, itemId, e);
+            throw new ServiceException("解析门店数据失败: " + e.getMessage());
+        } catch (Exception e) {
+            logger.error("查询门店异常，province: {}, itemId: {}", province, itemId, e);
+            throw new ServiceException("查询门店失败: " + e.getMessage());
         }
-        return imtItemInfoList;
     }
 
     @Override
