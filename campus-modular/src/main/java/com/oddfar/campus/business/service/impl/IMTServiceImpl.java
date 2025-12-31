@@ -167,13 +167,7 @@ public class IMTServiceImpl implements IMTService {
         JSONObject jsonObject = JSONObject.parseObject(execute.body());
         logger.info("「发送验证码返回」mobile: {}, response: {}", mobile, jsonObject.toJSONString());
         
-        if (String.valueOf(SUCCESS_CODE_2000).equals(jsonObject.getString("code"))) {
-            return Boolean.TRUE;
-        } else {
-            String errorMsg = jsonObject.getString("message");
-            logger.error("「发送验证码失败」mobile: {}, response: {}", mobile, jsonObject.toJSONString());
-            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "发送验证码失败");
-        }
+        return validateAndReturnSuccess(jsonObject, "发送验证码", mobile);
     }
 
     @Override
@@ -201,15 +195,12 @@ public class IMTServiceImpl implements IMTService {
         HttpResponse execute = request.body(JSONObject.toJSONString(map)).execute();
         JSONObject body = JSONObject.parseObject(execute.body());
 
-        if (String.valueOf(SUCCESS_CODE_2000).equals(body.getString("code"))) {
+        if (validateSuccessResponse(body, "登录", mobile)) {
             iUserService.insertIUser(Long.parseLong(mobile), deviceId, body);
             logger.info("「登录成功」mobile: {}", mobile);
             return true;
-        } else {
-            String errorMsg = body.getString("message");
-            logger.error("「登录失败」mobile: {}, response: {}", mobile, body.toJSONString());
-            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "登录失败");
         }
+        return false;
     }
 
 
@@ -285,10 +276,8 @@ public class IMTServiceImpl implements IMTService {
         HttpResponse execute = request.execute();
         JSONObject body = JSONObject.parseObject(execute.body());
 
-        if (body.getInteger("code") != SUCCESS_CODE_2000) {
-            String errorMsg = body.getString("message");
-            logger.error("「领取小茅运失败」mobile: {}, response: {}", iUser.getMobile(), body.toJSONString());
-            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : "领取小茅运失败");
+        if (!validateSuccessResponse(body, "领取小茅运", iUser.getMobile())) {
+            return;
         }
         logger.info("「领取小茅运成功」mobile: {}", iUser.getMobile());
     }
@@ -308,7 +297,7 @@ public class IMTServiceImpl implements IMTService {
         String body = request.execute().body();
         JSONObject jsonObject = JSONObject.parseObject(body);
         
-        if (jsonObject.getInteger("code") != SUCCESS_CODE_200) {
+        if (jsonObject.getInteger("code") == null || jsonObject.getInteger("code") != SUCCESS_CODE_200) {
             String message = jsonObject.getString("message");
             logger.error("「获取申购耐力值失败」mobile: {}, response: {}", iUser.getMobile(), body);
             throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取申购耐力值失败");
@@ -379,10 +368,8 @@ public class IMTServiceImpl implements IMTService {
         String body = request.execute().body();
         JSONObject jsonObject = JSONObject.parseObject(body);
         
-        if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = jsonObject.getString("message");
-            logger.error("「开始旅行失败」mobile: {}, response: {}", iUser.getMobile(), body);
-            throw new ServiceException(StringUtils.isNotEmpty(message) ? "开始旅行失败：" + message : "开始旅行失败");
+        if (!validateSuccessResponse(jsonObject, "开始旅行", iUser.getMobile())) {
+            return null;
         }
         
         logger.info("「开始旅行成功」mobile: {}", iUser.getMobile());
@@ -404,10 +391,8 @@ public class IMTServiceImpl implements IMTService {
         String body = request.execute().body();
         JSONObject jsonObject = JSONObject.parseObject(body);
         
-        if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = jsonObject.getString("message");
-            logger.error("「查询小茅运失败」mobile: {}, response: {}", iUser.getMobile(), body);
-            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "查询小茅运失败");
+        if (!validateSuccessResponse(jsonObject, "查询小茅运", iUser.getMobile())) {
+            return null;
         }
         
         Double reward = jsonObject.getJSONObject("data").getDouble("travelRewardXmy");
@@ -429,16 +414,25 @@ public class IMTServiceImpl implements IMTService {
         String body = request.form("__timestamp", DateUtil.currentSeconds()).execute().body();
         JSONObject jsonObject = JSONObject.parseObject(body);
         
-        if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = jsonObject.getString("message");
-            logger.error("「获取用户页面数据失败」mobile: {}, response: {}", iUser.getMobile(), body);
-            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取用户页面数据失败");
+        if (!validateSuccessResponse(jsonObject, "获取用户页面数据", iUser.getMobile())) {
+            return null;
         }
         
         JSONObject data = jsonObject.getJSONObject("data");
+        if (data == null) {
+            logger.error("「获取用户页面数据失败」mobile: {}, data为空", iUser.getMobile());
+            throw new ServiceException("获取用户页面数据失败，数据为空");
+        }
+        
         int energy = data.getIntValue("energy");
         JSONObject xmTravel = data.getJSONObject("xmTravel");
         JSONObject energyReward = data.getJSONObject("energyReward");
+        
+        if (xmTravel == null || energyReward == null) {
+            logger.error("「获取用户页面数据失败」mobile: {}, xmTravel或energyReward为空", iUser.getMobile());
+            throw new ServiceException("获取用户页面数据失败，必要数据为空");
+        }
+        
         Integer status = xmTravel.getInteger("status");
         Long travelEndTime = xmTravel.getLong("travelEndTime");
         int remainChance = xmTravel.getIntValue("remainChance");
@@ -497,10 +491,8 @@ public class IMTServiceImpl implements IMTService {
         String body = request.form("__timestamp", DateUtil.currentSeconds()).execute().body();
         JSONObject jsonObject = JSONObject.parseObject(body);
         
-        if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = jsonObject.getString("message");
-            logger.error("「获取剩余奖励耐力值失败」mobile: {}, response: {}", iUser.getMobile(), body);
-            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取剩余奖励耐力值失败");
+        if (!validateSuccessResponse(jsonObject, "获取剩余奖励耐力值", iUser.getMobile())) {
+            return 0;
         }
         
         int exchangeRateInfo = jsonObject.getJSONObject("data").getIntValue("currentPeriodCanConvertXmyNum");
@@ -603,9 +595,7 @@ public class IMTServiceImpl implements IMTService {
                 JSONObject jsonObject = JSONObject.parseObject(body);
                 logger.debug("「查询申购结果」mobile: {}, response: {}", iUser.getMobile(), body);
                 
-                if (jsonObject.getInteger("code") != SUCCESS_CODE_2000) {
-                    String message = jsonObject.getString("message");
-                    logger.warn("「查询申购结果失败」mobile: {}, message: {}", iUser.getMobile(), message);
+                if (!validateSuccessResponseSilent(jsonObject, "查询申购结果", iUser.getMobile())) {
                     failCount++;
                     continue;
                 }
@@ -674,11 +664,8 @@ public class IMTServiceImpl implements IMTService {
         HttpResponse execute = request.body(JSONObject.toJSONString(map)).execute();
         JSONObject body = JSONObject.parseObject(execute.body());
         
-        if (body.getInteger("code") != SUCCESS_CODE_2000) {
-            String message = body.getString("message");
-            logger.error("「预约商品失败」mobile: {}, itemId: {}, shopId: {}, response: {}", 
-                iUser.getMobile(), itemId, shopId, body.toJSONString());
-            throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "预约商品失败");
+        if (!validateSuccessResponse(body, "预约商品", iUser.getMobile())) {
+            return null;
         }
         
         logger.info("「预约商品成功」mobile: {}, itemId: {}, shopId: {}", 
@@ -767,5 +754,61 @@ public class IMTServiceImpl implements IMTService {
     private void setWapHeadersWithoutLocation(HttpRequest request, IUser iUser) {
         setCommonHeaders(request, iUser.getDeviceId());
         request.cookie("MT-Token-Wap=" + iUser.getCookie() + ";MT-Device-ID-Wap=" + iUser.getDeviceId() + ";");
+    }
+
+    /**
+     * 验证响应是否成功（返回Boolean）
+     *
+     * @param jsonObject 响应JSON对象
+     * @param operation 操作名称
+     * @param mobile 手机号（用于日志）
+     * @return 是否成功
+     */
+    private Boolean validateAndReturnSuccess(JSONObject jsonObject, String operation, String mobile) {
+        if (String.valueOf(SUCCESS_CODE_2000).equals(jsonObject.getString("code"))) {
+            return Boolean.TRUE;
+        } else {
+            String errorMsg = jsonObject.getString("message");
+            logger.error("「{}失败」mobile: {}, response: {}", operation, mobile, jsonObject.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : operation + "失败");
+        }
+    }
+
+    /**
+     * 验证响应是否成功（返回boolean，失败时抛出异常）
+     *
+     * @param jsonObject 响应JSON对象
+     * @param operation 操作名称
+     * @param mobile 手机号（用于日志）
+     * @return 是否成功
+     * @throws ServiceException 失败时抛出异常
+     */
+    private boolean validateSuccessResponse(JSONObject jsonObject, String operation, String mobile) {
+        if (String.valueOf(SUCCESS_CODE_2000).equals(jsonObject.getString("code"))) {
+            return true;
+        } else {
+            String errorMsg = jsonObject.getString("message");
+            logger.error("「{}失败」mobile: {}, response: {}", operation, mobile, jsonObject.toJSONString());
+            throw new ServiceException(StringUtils.isNotEmpty(errorMsg) ? errorMsg : operation + "失败");
+        }
+    }
+
+    /**
+     * 验证响应是否成功（不抛出异常，返回boolean）
+     *
+     * @param jsonObject 响应JSON对象
+     * @param operation 操作名称
+     * @param mobile 手机号（用于日志）
+     * @return 是否成功
+     */
+    private boolean validateSuccessResponseSilent(JSONObject jsonObject, String operation, String mobile) {
+        if (jsonObject.getInteger("code") != null && 
+            (jsonObject.getInteger("code") == SUCCESS_CODE_2000 || jsonObject.getInteger("code") == SUCCESS_CODE_200)) {
+            return true;
+        } else {
+            String errorMsg = jsonObject.getString("message");
+            logger.warn("「{}失败」mobile: {}, message: {}", operation, mobile, errorMsg);
+            return false;
+        }
     }
 }
