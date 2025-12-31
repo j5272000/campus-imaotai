@@ -68,8 +68,13 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
             HttpRequest request = HttpUtil.createRequest(Method.GET,
                     "https://static.moutai519.com.cn/mt-backend/xhr/front/mall/resource/get");
 
-            JSONObject body = JSONObject.parseObject(request.execute().body());
-            //获取shop的url
+            HttpResponse response = request.execute();
+            String responseBody = response.body();
+            if (StringUtils.isEmpty(responseBody)) {
+                throw new ServiceException("获取门店资源URL失败，响应为空");
+            }
+            
+            JSONObject body = JSONObject.parseObject(responseBody);
             JSONObject data = body.getJSONObject("data");
             if (data == null || !data.containsKey("mtshops_pc")) {
                 throw new ServiceException("获取门店资源URL失败，响应数据异常");
@@ -132,29 +137,34 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
             
             JSONObject jsonObject = JSONObject.parseObject(res);
 
-            if ("2000".equals(jsonObject.getString("code"))) {
-                JSONObject data = jsonObject.getJSONObject("data");
-                mtSessionId = data.getString("sessionId");
-                if (StringUtils.isEmpty(mtSessionId)) {
-                    throw new ServiceException("SessionId为空");
-                }
-                redisCache.setCacheObject("mt_session_id", mtSessionId);
-                logger.info("成功获取SessionId: {}", mtSessionId);
-
-                iItemMapper.truncateItem();
-                //item插入数据库
-                JSONArray itemList = data.getJSONArray("itemList");
-                if (itemList != null && !itemList.isEmpty()) {
-                    for (Object obj : itemList) {
-                        JSONObject item = (JSONObject) obj;
-                        IItem iItem = new IItem(item);
-                        iItemMapper.insert(iItem);
-                    }
-                    logger.info("商品列表更新完成，共{}个商品", itemList.size());
-                }
-            } else {
+            String code = jsonObject.getString("code");
+            if (!"2000".equals(code)) {
                 String message = jsonObject.getString("message");
                 throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "获取SessionId失败");
+            }
+            
+            JSONObject data = jsonObject.getJSONObject("data");
+            if (data == null) {
+                throw new ServiceException("获取SessionId失败，响应数据为空");
+            }
+            
+            mtSessionId = data.getString("sessionId");
+            if (StringUtils.isEmpty(mtSessionId)) {
+                throw new ServiceException("SessionId为空");
+            }
+            redisCache.setCacheObject("mt_session_id", mtSessionId);
+            logger.info("成功获取SessionId: {}", mtSessionId);
+
+            iItemMapper.truncateItem();
+            //item插入数据库
+            JSONArray itemList = data.getJSONArray("itemList");
+            if (itemList != null && !itemList.isEmpty()) {
+                for (Object obj : itemList) {
+                    JSONObject item = (JSONObject) obj;
+                    IItem iItem = new IItem(item);
+                    iItemMapper.insert(iItem);
+                }
+                logger.info("商品列表更新完成，共{}个商品", itemList.size());
             }
         } catch (Exception e) {
             logger.error("获取SessionId失败", e);
@@ -219,7 +229,8 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
             
             JSONObject res = JSONObject.parseObject(urlRes);
 
-            if (!res.containsKey("code") || !"2000".equals(res.getString("code"))) {
+            String code = res.getString("code");
+            if (StringUtils.isEmpty(code) || !"2000".equals(code)) {
                 String message = res.getString("message");
                 logger.error("查询门店失败，province: {}, itemId: {}, response: {}", province, itemId, urlRes);
                 throw new ServiceException(StringUtils.isNotEmpty(message) ? message : "查询门店失败");
@@ -314,19 +325,38 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
      * @return
      */
     public String getMaxInventoryShopId(List<IMTItemInfo> list1, List<IShop> list2, String city) {
-
-        //本城市的shopId集合
-        List<String> cityShopIdList = list2.stream().filter(iShop -> iShop.getCityName().contains(city))
-                .map(IShop::getIShopId).collect(Collectors.toList());
-
-        List<IMTItemInfo> collect = list1.stream().filter(i -> cityShopIdList.contains(i.getShopId())).sorted(Comparator.comparing(IMTItemInfo::getInventory).reversed()).collect(Collectors.toList());
-
-
-        if (collect != null && collect.size() > 0) {
-            return collect.get(0).getShopId();
+        if (list1 == null || list1.isEmpty() || list2 == null || list2.isEmpty()) {
+            logger.warn("门店或商品信息列表为空，无法获取最大库存门店");
+            return null;
+        }
+        
+        if (StringUtils.isEmpty(city)) {
+            logger.warn("城市名称为空，无法获取最大库存门店");
+            return null;
         }
 
-        return null;
+        //本城市的shopId集合
+        List<String> cityShopIdList = list2.stream()
+                .filter(iShop -> iShop.getCityName() != null && iShop.getCityName().contains(city))
+                .map(IShop::getIShopId)
+                .collect(Collectors.toList());
+        
+        if (cityShopIdList.isEmpty()) {
+            logger.debug("本城市门店列表为空，city: {}", city);
+            return null;
+        }
+
+        List<IMTItemInfo> collect = list1.stream()
+                .filter(i -> cityShopIdList.contains(i.getShopId()))
+                .sorted(Comparator.comparing(IMTItemInfo::getInventory).reversed())
+                .collect(Collectors.toList());
+
+        if (collect.isEmpty()) {
+            logger.debug("本城市商品信息列表为空，city: {}", city);
+            return null;
+        }
+
+        return collect.get(0).getShopId();
     }
 
     /**
@@ -339,21 +369,47 @@ public class IShopServiceImpl extends ServiceImpl<IShopMapper, IShop> implements
      * @return
      */
     public String getMinDistanceShopId(List<IShop> list2, String province, String lat, String lng) {
+        if (list2 == null || list2.isEmpty()) {
+            logger.warn("门店列表为空，无法计算最近距离");
+            return null;
+        }
+        
         //本省的
-        List<IShop> iShopList = list2.stream().filter(iShop -> iShop.getProvinceName().contains(province))
+        List<IShop> iShopList = list2.stream()
+                .filter(iShop -> iShop.getProvinceName() != null && iShop.getProvinceName().contains(province))
                 .collect(Collectors.toList());
-
-        MapPoint myPoint = new MapPoint(Double.parseDouble(lat), Double.parseDouble(lng));
-        for (IShop iShop : iShopList) {
-            MapPoint point = new MapPoint(Double.parseDouble(iShop.getLat()), Double.parseDouble(iShop.getLng()));
-            Double disdance = getDisdance(myPoint, point);
-            iShop.setDistance(disdance);
+        
+        if (iShopList.isEmpty()) {
+            logger.warn("本省门店列表为空，province: {}", province);
+            return null;
         }
 
-        List<IShop> collect = iShopList.stream().sorted(Comparator.comparing(IShop::getDistance)).collect(Collectors.toList());
+        try {
+            MapPoint myPoint = new MapPoint(Double.parseDouble(lat), Double.parseDouble(lng));
+            for (IShop iShop : iShopList) {
+                if (StringUtils.isEmpty(iShop.getLat()) || StringUtils.isEmpty(iShop.getLng())) {
+                    continue;
+                }
+                MapPoint point = new MapPoint(Double.parseDouble(iShop.getLat()), Double.parseDouble(iShop.getLng()));
+                Double distance = getDisdance(myPoint, point);
+                iShop.setDistance(distance);
+            }
 
-        return collect.get(0).getIShopId();
+            List<IShop> collect = iShopList.stream()
+                    .filter(shop -> shop.getDistance() != null)
+                    .sorted(Comparator.comparing(IShop::getDistance))
+                    .collect(Collectors.toList());
 
+            if (collect.isEmpty()) {
+                logger.warn("无法计算距离的门店列表为空");
+                return null;
+            }
+
+            return collect.get(0).getIShopId();
+        } catch (NumberFormatException e) {
+            logger.error("解析经纬度失败，lat: {}, lng: {}", lat, lng, e);
+            throw new ServiceException("经纬度格式错误");
+        }
     }
 
     public static Double getDisdance(MapPoint point1, MapPoint point2) {

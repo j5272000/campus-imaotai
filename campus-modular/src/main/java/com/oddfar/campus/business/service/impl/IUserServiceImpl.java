@@ -36,7 +36,11 @@ public class IUserServiceImpl implements IUserService {
 
     @Override
     public int insertIUser(Long mobile, String deviceId, JSONObject jsonObject) {
-        if (mobile == null || jsonObject == null) {
+        if (mobile == null) {
+            throw new ServiceException("手机号不能为空");
+        }
+        
+        if (jsonObject == null) {
             throw new ServiceException("用户信息不能为空");
         }
         
@@ -52,14 +56,19 @@ public class IUserServiceImpl implements IUserService {
             IUser iUser = new IUser(mobile, jsonObject);
             iUser.setCreateUser(SecurityUtils.getUserId());
             BeanUtil.copyProperties(iUser, user, "shopType", "minute");
-            return iUserMapper.updateById(user);
+            int result = iUserMapper.updateById(user);
+            logger.debug("更新用户信息成功，mobile: {}", mobile);
+            return result;
         } else {
             if (StringUtils.isEmpty(deviceId)) {
                 deviceId = UUID.randomUUID().toString().toLowerCase();
+                logger.debug("生成新设备ID，mobile: {}, deviceId: {}", mobile, deviceId);
             }
             IUser iUser = new IUser(mobile, deviceId, jsonObject);
             iUser.setCreateUser(SecurityUtils.getUserId());
-            return iUserMapper.insert(iUser);
+            int result = iUserMapper.insert(iUser);
+            logger.info("新增用户成功，mobile: {}", mobile);
+            return result;
         }
     }
 
@@ -94,15 +103,26 @@ public class IUserServiceImpl implements IUserService {
 
     @Override
     public int updateIUser(IUser iUser) {
-        if (iUser == null || iUser.getMobile() == null) {
+        if (iUser == null) {
             throw new ServiceException("用户信息不能为空");
         }
         
+        if (iUser.getMobile() == null) {
+            throw new ServiceException("手机号不能为空");
+        }
+        
         Long currentUserId = SecurityUtils.getUserId();
-        if (currentUserId != 1 && !iUser.getCreateUser().equals(currentUserId)) {
+        if (currentUserId == null) {
+            throw new ServiceException("当前用户ID为空");
+        }
+        
+        if (currentUserId != 1 && (iUser.getCreateUser() == null || !iUser.getCreateUser().equals(currentUserId))) {
             throw new ServiceException("只能修改自己创建的用户");
         }
-        return iUserMapper.updateById(iUser);
+        
+        int result = iUserMapper.updateById(iUser);
+        logger.debug("更新用户信息成功，mobile: {}", iUser.getMobile());
+        return result;
     }
 
     @Override
@@ -111,13 +131,17 @@ public class IUserServiceImpl implements IUserService {
         try {
             Long userCount = iUserMapper.selectCount();
             if (userCount == null || userCount == 0) {
+                logger.debug("用户数量为0，跳过批量更新预约时间");
                 return;
             }
             
+            logger.info("开始批量更新用户预约时间，用户数量: {}", userCount);
             if (userCount > 60) {
                 iUserMapper.updateUserMinuteEven();
+                logger.info("使用均匀分配方式更新预约时间完成");
             } else {
                 iUserMapper.updateUserMinuteBatch();
+                logger.info("使用批量方式更新预约时间完成");
             }
         } catch (Exception e) {
             logger.error("批量更新用户预约时间失败", e);
