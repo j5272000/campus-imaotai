@@ -59,13 +59,12 @@ public class CampusIMTTask {
     @Async
     @Scheduled(cron = "0 10,55 7,8 ? * * ")
     public void refresh() {
-        logger.info("「刷新数据」开始刷新版本号，预约item，门店shop列表  ");
+        logger.info("「刷新数据」开始刷新版本号，预约item，门店shop列表");
         try {
             imtService.refreshAll();
         } catch (Exception e) {
-            logger.info("「刷新数据执行报错」%s", e.getMessage());
+            logger.error("「刷新数据执行报错」", e);
         }
-
     }
 
 
