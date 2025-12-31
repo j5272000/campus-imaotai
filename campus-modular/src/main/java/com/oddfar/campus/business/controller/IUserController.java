@@ -51,9 +51,16 @@ public class IUserController {
     @GetMapping(value = "/sendCode", name = "发送验证码")
     @PreAuthorize("@ss.resourceAuth()")
     public R sendCode(String mobile, String deviceId) {
-        imtService.sendCode(mobile, deviceId);
-
-        return R.ok();
+        try {
+            Boolean result = imtService.sendCode(mobile, deviceId);
+            if (Boolean.TRUE.equals(result)) {
+                return R.ok();
+            } else {
+                return R.error("发送验证码失败");
+            }
+        } catch (Exception e) {
+            return R.error("发送验证码失败：" + e.getMessage());
+        }
     }
 
     /**
@@ -69,9 +76,12 @@ public class IUserController {
         if (StringUtils.isEmpty(user.getItemCode())) {
             return R.error("商品预约code为空");
         }
-
-        imtService.reservation(user);
-        return R.ok();
+        try {
+            imtService.reservation(user);
+            return R.ok();
+        } catch (Exception e) {
+            return R.error("预约失败：" + e.getMessage());
+        }
     }
 
     /**
@@ -83,9 +93,12 @@ public class IUserController {
         IUser user = iUserMapper.selectById(mobile);
         if (user == null) {
             return R.error("用户不存在");
-        } else {
+        }
+        try {
             imtService.getTravelReward(user);
             return R.ok();
+        } catch (Exception e) {
+            return R.error("旅行奖励获取失败：" + e.getMessage());
         }
     }
 
@@ -95,9 +108,16 @@ public class IUserController {
     @GetMapping(value = "/login", name = "登录")
     @PreAuthorize("@ss.resourceAuth()")
     public R login(String mobile, String code, String deviceId) {
-        imtService.login(mobile, code, deviceId);
-
-        return R.ok();
+        try {
+            boolean success = imtService.login(mobile, code, deviceId);
+            if (success) {
+                return R.ok();
+            } else {
+                return R.error("登录失败");
+            }
+        } catch (Exception e) {
+            return R.error("登录失败：" + e.getMessage());
+        }
     }
 
 
